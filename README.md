@@ -20,7 +20,7 @@ See my [video on YouTube](https://youtu.be/F76B2gxWJc4) for a visual demo on how
 
 ## Wiring
 
-![wiring diagram](https://github.com/tygunn/PressForMusic/img/ESP8266Wiring.png)
+![wiring diagram](https://github.com/tygunn/PressForMusic/blob/master/img/ESP8266Wiring.png?raw=true)
 
 
 
