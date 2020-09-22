@@ -18,4 +18,12 @@ When the show viewer activates the speakers (by pressing a button or stepping on
 
 See my [video on YouTube](https://youtu.be/F76B2gxWJc4) for a visual demo on how this all works.
 
+## Wiring
+
+![wiring diagram](https://github.com/tygunn/PressForMusic/img/ESP8266Wiring.png)
+
+
+
+
+
 
