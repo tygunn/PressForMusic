@@ -12,9 +12,18 @@
 // Unlike timer-based setups, PressForMusic will active your speakers for a set number of songs after
 // the user presses the button.
 
+// If you do not wish to timestamp the MQTT messages published for button presses, change this to
+// undef instead of define.
+#define USE_NTP
+
 #include <ESP8266WiFi.h>
 #include <Ticker.h>
 #include <AsyncMqttClient.h>
+#ifdef USE_NTP
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <time.h>
+#endif
 
 
 // ------------------------------------------------------------------------------------------------
@@ -22,8 +31,8 @@
 // It is assumed that you're using DHCP to get an IP address; there is no strict need to have a
 // static IP for this application.
 
-#define WIFI_SSID "booga"
-#define WIFI_PASSWORD "booga"
+#define WIFI_SSID "iot.egunn.com"
+#define WIFI_PASSWORD "passwordzor"
 
 // ------------------------------------------------------------------------------------------------
 // This section contains settings for the MQTT server you wish the device to connect to.
@@ -31,6 +40,18 @@
 #define MQTT_SERVER_IP IPAddress(192, 168, 0, 125)
 #define MQTT_SERVER_PORT 1883
 
+#ifdef USE_NTP
+// You can also use pool.ntp.org; however that's going to be an actual internet query.  My own IOT
+// network where the ESP8266 runs does not have access to the internet, so I used an internal raspberry
+// pi that is also an NTP server.
+#define NTP_SERVER_ADDRESS "192.168.0.125"
+
+// Define your timezone offset.  It's super intuitive right? number of seconds offset from GMT.
+// GMT +1 = 3600
+// Pacific daylight time is UTC -7 hr = -25200
+// Though when daylight savings is in place PST is -8 hr = -28800
+#define GMT_OFFSET -25200
+#endif
 
 // ------------------------------------------------------------------------------------------------
 // This section contains MQTT topic definitions.  You shouldn't need to look into this much.
@@ -51,10 +72,13 @@
 
 // We will publish push events to this topic when there is music playing; this can be used to get a
 // count of how many people press the button during your show.
-#define MQTT_BUTTON_PRESS_COUNT_PLAYING_TOPIC "christmas/pressForMusic/countPlaying"
+const char MQTT_BUTTON_PRESS_COUNT_PLAYING_TOPIC[] = "christmas/pressForMusic/countPlaying";
+
 // We will publish push events to this topic when there is NOT music playing.
 // This can be used to get a count of how many people push the button outside of the show.
-#define MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC "christmas/pressForMusic/countIdle"
+const char MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC[] = "christmas/pressForMusic/countIdle";
+
+const char MQTT_TRIGGER_PAYLOAD[] = "trigger";
 
 // This is the topic we will public a signal to indicating that there was a trigger on your blueiris server.
 // Change undef to define if you want to do this type of publish.
@@ -122,6 +146,11 @@ WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
 Ticker wifiReconnectTimer;
 
+#ifdef USE_NTP
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, NTP_SERVER_ADDRESS);
+#endif
+
 // Whether we know FPP is playing music or not.
 bool isFppPlaying = false;
 
@@ -169,12 +198,19 @@ void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     Serial.println("Connected to Wi-Fi.");
   #endif
   connectToMqtt();
+
+  // There's still time!
+  #ifdef USE_NTP
+    timeClient.begin();
+    timeClient.setTimeOffset(GMT_OFFSET);
+  #endif
 }
 
 // Async callback received when wifi connection is lost; we attempt to auto-reconnect.
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
   #ifdef DEBUG_SERIAL
-    Serial.println("Disconnected from Wi-Fi.");
+    Serial.print("Disconnected from Wi-Fi; reason = ");
+    Serial.println(event.reason);
   #endif
   mqttReconnectTimer.detach(); // ensure we don't reconnect to MQTT while reconnecting to Wi-Fi
   wifiReconnectTimer.once(2, connectToWifi);
@@ -358,6 +394,30 @@ void setup() {
 }
 
 void handleButtonDown() {
+  const char* topic;
+  const char* payload;
+
+  #ifdef USE_NTP
+    // Since ESP8266 doesn't have a realtime clock, we need to query NTP for the time/date.
+    timeClient.update();
+
+    unsigned long epochTime = timeClient.getEpochTime();
+    #ifdef DEBUG_SERIAL
+    Serial.print("Epoch Time: ");
+    Serial.println(epochTime);
+    #endif
+    struct tm *timeinfo = gmtime ((time_t *)&epochTime);
+    char dateString[80];
+    strftime(dateString,80,"%Y-%m-%dT%H:%M:%S", timeinfo);
+    #ifdef DEBUG_SERIAL
+    Serial.print("Formatted time: ");
+    Serial.println(dateString);
+    #endif
+    payload = dateString;
+  #else
+    payload = MQTT_TRIGGER_PAYLOAD;
+  #endif
+
   if (isFppPlaying) {
     songsRemaining = SONG_COUNT;
     #ifdef DEBUG_SERIAL
@@ -365,7 +425,7 @@ void handleButtonDown() {
       Serial.println(songsRemaining);
     #endif
     digitalWrite(SPEAKER_RELAY_PIN, HIGH);
-    mqttClient.publish(MQTT_BUTTON_PRESS_COUNT_PLAYING_TOPIC, 2, true, "trigger");
+    topic = MQTT_BUTTON_PRESS_COUNT_PLAYING_TOPIC;
     #ifdef MQTT_PUBLISH_TO_BLUEIRIS
       mqttClient.publish(MQTT_BLUEIRIS_TRIGGER_TOPIC, 2, true, MQTT_BLUEIRIS_TRIGGER_PAYLOAD);
     #endif
@@ -376,8 +436,10 @@ void handleButtonDown() {
     #ifdef DEBUG_SERIAL
       Serial.println("  << Rick-roll");
     #endif
-    mqttClient.publish(MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC, 2, true, "trigger");
+    topic = MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC;
+    
   }
+  mqttClient.publish(topic, 2, true, payload);
 }
 
 // The main event loop.
