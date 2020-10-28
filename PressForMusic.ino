@@ -32,7 +32,7 @@
 // static IP for this application.
 
 #define WIFI_SSID "iot.egunn.com"
-#define WIFI_PASSWORD "passwordzor"
+#define WIFI_PASSWORD "wow"
 
 // ------------------------------------------------------------------------------------------------
 // This section contains settings for the MQTT server you wish the device to connect to.
@@ -69,6 +69,13 @@
 // This is the topic we will subscribe to for the purpose of determining the name of the media file
 // currently playing.
 #define MQTT_FPP_PLAYLIST_SEQUENCE_STATUS_TOPIC "christmas/falcon/player/FPP/playlist/sequence/status"
+
+// When we start a rickroll, we play for 2 songs; my default is to have a pause playlist entry, and then to have the
+// media file play
+#define RICKROLL_SONG_COUNT 2
+
+// This is the topic we will publish to rick-roll unsuspecting guests who press the button outside of normal show hours.
+#define MQTT_FPP_RICKROLL_TOPIC "christmas/falcon/player/FPP/set/playlist/RickRoll/start"
 
 // We will publish push events to this topic when there is music playing; this can be used to get a
 // count of how many people press the button during your show.
@@ -153,6 +160,8 @@ NTPClient timeClient(ntpUDP, NTP_SERVER_ADDRESS);
 
 // Whether we know FPP is playing music or not.
 bool isFppPlaying = false;
+bool isRickRollPending = false;
+bool isRickRolling = false;
 
 #define PAUSE_STATUS_PAUSED 0
 #define PAUSE_STATUS_UNPAUSED 1
@@ -283,6 +292,7 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
         Serial.println("  << FPP is idle");
       #endif
       isFppPlaying = false;
+      isRickRolling = false;
       currentPlaylistPosition = -1;
       deactiveSpeakers();
       #ifdef TRIGGER_RELAY_DURING_PAUSE
@@ -299,6 +309,13 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
         Serial.println("  << FPP Is playing");
       #endif
       isFppPlaying = true;
+
+      if (isRickRollPending) {
+        songsRemaining = RICKROLL_SONG_COUNT + 1;
+        digitalWrite(SPEAKER_RELAY_PIN, HIGH);
+        isRickRollPending = false;
+        isRickRolling = true;
+      }
     }
   // Change in playlist position
   } else if (strcmp(topic, MQTT_FPP_PLAYLIST_POSITION_TOPIC) == 0) {
@@ -393,6 +410,32 @@ void setup() {
   connectToWifi();
 }
 
+void handleRickRoll() {
+
+  #ifdef USE_NTP
+    // Since ESP8266 doesn't have a realtime clock, we need to query NTP for the time/date.
+    timeClient.update();
+
+    unsigned long epochTime = timeClient.getEpochTime();
+    #ifdef DEBUG_SERIAL
+    Serial.print("Epoch Time: ");
+    Serial.println(epochTime);
+    #endif
+    struct tm *timeinfo = gmtime ((time_t *)&epochTime);
+
+    if (timeinfo->tm_hour < 6 || timeinfo->tm_hour > 22) {
+      #ifdef DEBUG_SERIAL
+        Serial.println("SKipped rickroll; out of valid hours." );
+      #endif
+      return;
+    }
+    
+  #endif
+  isRickRollPending = true;
+  isRickRolling = false;
+  mqttClient.publish(MQTT_FPP_RICKROLL_TOPIC, 2, true, "start");
+}
+
 void handleButtonDown() {
   const char* topic;
   const char* payload;
@@ -418,7 +461,7 @@ void handleButtonDown() {
     payload = MQTT_TRIGGER_PAYLOAD;
   #endif
 
-  if (isFppPlaying) {
+  if (isFppPlaying && !isRickRolling) {
     songsRemaining = SONG_COUNT;
     #ifdef DEBUG_SERIAL
       Serial.print("Activate speakers - songs remaining: ");
@@ -436,8 +479,8 @@ void handleButtonDown() {
     #ifdef DEBUG_SERIAL
       Serial.println("  << Rick-roll");
     #endif
+    handleRickRoll();
     topic = MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC;
-    
   }
   mqttClient.publish(topic, 2, true, payload);
 }
