@@ -53,9 +53,15 @@ The ESP8266 has a mini-usb port on it; that's the easiest way to power the ESP82
 
 To compile the code, you will need to install a few dependencies into the Arduino IDE.  Open the downlaoded PressForMusic source file in the Arduino IDE.
 
+https://randomnerdtutorials.com/install-esp32-filesystem-uploader-arduino-ide/
+First, we need to install ESP tools.  This lets us upload some files into the ESP8266 filesystem for the webserver portion.  Go [here](https://github.com/esp8266/arduino-esp8266fs-plugin/releases).  Download the file ESP8266FS-0.5.0.zip
+(or similar). Next, go to the Arduino IDE directory, and open the Tools folder.  Copy the contents of the downloaded zip file into the tools directory.  The structure of the file you just added should be something like: Arduino\tools\ESP8266FS\tool\esp8266fs.jar.  Now restart the Arduino IDE.  Open the source again.  You should be able to choose Tools > ESP8266 Sketch Data upload.
+
 Download [ESPAsyncTCP](https://github.com/me-no-dev/ESPAsyncTCP/archive/master.zip).  From the Arduino IDE choose: Sketch > Include Library > Add ZIP Library.  Choose the downloaded ESPAsyncTCP zip file you just downloaded.
 
-First, download [AsyncMqttClient](https://github.com/marvinroger/async-mqtt-client/releases/latest).  From the Arduino IDE choose: Sketch > Include Library > Add ZIP Library.  Choose the downloaded AsyncMqttClient zip file you just downloaded.
+Download [AsyncMqttClient](https://github.com/marvinroger/async-mqtt-client/releases/latest).  From the Arduino IDE choose: Sketch > Include Library > Add ZIP Library.  Choose the downloaded AsyncMqttClient zip file you just downloaded.
+
+Download [EspAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer/archive/master.zip).  From the Arduio IDE choose: Sketch > Include Library > Add ZIP Library.  Choose the downlaoded EspAsyncWebServer zip file you just downloaded.
 
 Next, in the source code, replace WIFI_SSID and WIFI_PASSWORD with your credentials.  Also change MQTT_SERVER_IP to the IP address of the MQTT server on your network.  If you don't have one set up already, this is a good use for another Raspberry PI.  I have another PI on my network and followed [instructions like these](https://appcodelabs.com/introduction-to-iot-build-an-mqtt-server-using-raspberry-pi) to install mosquitto, an MQTT server on the PI.  
 

@@ -17,8 +17,11 @@
 #define USE_NTP
 
 #include <ESP8266WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPAsyncTCP.h>
 #include <Ticker.h>
 #include <AsyncMqttClient.h>
+#include <FS.h>   // Include the SPIFFS library
 #ifdef USE_NTP
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -32,7 +35,7 @@
 // static IP for this application.
 
 #define WIFI_SSID "iot.egunn.com"
-#define WIFI_PASSWORD "wow"
+#define WIFI_PASSWORD "stuff"
 
 // ------------------------------------------------------------------------------------------------
 // This section contains settings for the MQTT server you wish the device to connect to.
@@ -115,7 +118,7 @@ const char MQTT_TRIGGER_PAYLOAD[] = "trigger";
 // When set to 2, indicates that the speakers shall be active until the
 // end of the next song.
 // ... etc
-#define SONG_COUNT 2   
+int SONG_COUNT = 2;
 
 // ------------------------------------------------------------------------------------------------
 // This section is for configuration of triggering another relay pin during times in your
@@ -168,6 +171,9 @@ bool isRickRolling = false;
 #define PAUSE_STATUS_UNPAUSE_SCHEDULED 2
 volatile int pauseStatus = PAUSE_STATUS_UNPAUSED;
 
+// File name for the preferences file which stores... the prefs!  Yay.
+#define PREFERENCES "/prefs.txt"
+
 // We use the current position in the playlist to know when songs change.
 int currentPlaylistPosition = -1;
 // We track the current button state and do some debouncing to ensure we get a stable
@@ -178,18 +184,48 @@ int newButtonState = -1;
 
 // How many songs are remaining before we shut off the speakers.
 int songsRemaining = -1;
+boolean overrideOn = false;
 
 // Last time the button changed state; used with below to debounce input.
 unsigned long lastButtonStateChangeTime = 0;
 unsigned long debounceTime = 50;
 unsigned long deactivePauseRelayTime = 0;
 
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+String getSongsLeft() {
+  return String(songsRemaining);
+}
+
+String getState() {
+  if (!overrideOn && songsRemaining <= -1) {
+    return "off";
+  } else {
+    return "on";
+  }
+}
+
+String getOverrideState() {
+  if (overrideOn) {
+    return "on";
+  } else {
+    return "off";
+  }
+}
+
+String getSongsOnPref() {
+  return String(SONG_COUNT);
+}
+
 // Shut off the speaker relay.
 void deactiveSpeakers() {
   #ifdef DEBUG_SERIAL
     Serial.println("Deactivate speakers");
   #endif
-  digitalWrite(SPEAKER_RELAY_PIN, LOW);
+  if (!overrideOn) {
+    digitalWrite(SPEAKER_RELAY_PIN, LOW);
+  }
   songsRemaining = -1;
 }
 
@@ -201,10 +237,26 @@ void connectToWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
+void saveSongCountPref() {
+  File file = SPIFFS.open(PREFERENCES, "w");
+  if (!file) {
+    #ifdef DEBUG_SERIAL
+      Serial.println("Failed to create prefs");
+    #endif
+    return;
+  }
+  file.println(SONG_COUNT);
+  #ifdef DEBUG_SERIAL
+    Serial.println("No preference found; created");
+  #endif
+}
+
 // Async callback received when the wifis are up; connect to MQTT at this point.
 void onWifiConnect(const WiFiEventStationModeGotIP& event) {
   #ifdef DEBUG_SERIAL
     Serial.println("Connected to Wi-Fi.");
+    Serial.print("My IP: ");
+    Serial.println(WiFi.localIP());
   #endif
   connectToMqtt();
 
@@ -213,6 +265,64 @@ void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     timeClient.begin();
     timeClient.setTimeOffset(GMT_OFFSET);
   #endif
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    Serial.println("Woot! Got http request");
+    request->send(SPIFFS, "/index.html", String(), false, processor);
+  });
+  
+  // Route to load style.css file
+  server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/style.css", "text/css");
+  });
+
+  // Dynamic query for songs remaining
+  server.on("/songsleft", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", getSongsLeft().c_str());
+  });
+
+  // Dynamic query for speaker on state
+  server.on("/state", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", getState().c_str());
+  });
+
+  // Dynamic query for speaker override on state
+  server.on("/overridestate", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", getOverrideState().c_str());
+  });
+
+  // Turn speakers on!
+  server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request){
+    overrideOn = true;
+    digitalWrite(SPEAKER_RELAY_PIN, HIGH);    
+    request->send(SPIFFS, "/index.html", String(), false, processor);
+  });
+
+  // Turn speakers off!
+  server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request){
+    overrideOn = false;
+    deactiveSpeakers();
+    request->send(SPIFFS, "/index.html", String(), false, processor);
+  });
+
+  // Turn speakers off!
+  server.on("/songsonpref", HTTP_GET, [](AsyncWebServerRequest *request){
+    for(int i=0;i<request->params();i++){
+      AsyncWebParameter* p = request->getParam(i);
+      if (p->name() == "songsonpref") {
+        Serial.print("Param name: ");
+        Serial.println(p->name());
+        Serial.print("Param value: ");
+        Serial.println(p->value());
+        SONG_COUNT = p->value().toInt();
+        saveSongCountPref();
+      }
+    }
+    
+    request->send(SPIFFS, "/index.html", String(), false, processor);
+  });
+
+  server.begin();
 }
 
 // Async callback received when wifi connection is lost; we attempt to auto-reconnect.
@@ -378,6 +488,48 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
   
 }
 
+void initializeFilesystem() {
+  #ifdef DEBUG_SERIAL
+    Serial.println("Filesystem initializing...");
+  #endif
+  if (!SPIFFS.exists(PREFERENCES)) {
+    saveSongCountPref();
+  } else {
+    File file = SPIFFS.open(PREFERENCES, "r");
+    if (!file) {
+      #ifdef DEBUG_SERIAL
+        Serial.println("Failed to read prefs");
+      #endif
+      return;
+    }
+    if (file.available()) {
+      String songCount = file.readStringUntil('\n');
+      SONG_COUNT = songCount.toInt();
+    }
+    #ifdef DEBUG_SERIAL
+      Serial.print("Preferences exist; loaded soundCount=");
+      Serial.println(SONG_COUNT);
+    #endif
+
+  }
+  
+}
+
+// Replaces placeholder with LED state value
+String processor(const String& var){
+  Serial.println(var);
+  if (var == "SONGSLEFT"){
+    return getSongsLeft();
+  } else if (var == "STATE"){ 
+    return getState();
+  } else if (var == "OVERRIDESTATE") {
+    return getOverrideState();
+  } else if (var == "SONGSONPREF") {
+    return getSongsOnPref();
+  }
+  return "";
+}
+
 // Set things up.
 void setup() {
   // Setup the relay and switch pins.
@@ -406,6 +558,9 @@ void setup() {
   mqttClient.onMessage(onMqttMessage);
   mqttClient.onPublish(onMqttPublish);
   mqttClient.setServer(MQTT_SERVER_IP, MQTT_SERVER_PORT);
+
+  SPIFFS.begin();
+  initializeFilesystem();
 
   connectToWifi();
 }

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ESP8266 Web Server</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+  <h1>Press For Music</h1>
+  <p>Speaker state<strong> <span id="state">%STATE%</span></strong></p>
+  <p>Speaker override state<strong> <span id="overridestate">%OVERRIDESTATE%</span></strong></p>
+  <p>
+    <a href="/on"><button class="button">ON</button></a>
+    <a href="/off"><button class="button button2">OFF</button></a>
+  </p>
+  <p>
+    <span class="sensor-labels">Songs left</span>
+    <span id="songsleft">%SONGSLEFT%</span>
+  </p>
+  <p>
+    <span class="sensor-labels">Speaker on for songs</span>
+    <form action="/songsonpref" method="get">
+    <input type="text" id="songsonpref" name="songsonpref" value="%SONGSONPREF%">
+    <input type="submit" value="Save">
+    </form>
+  </p>
+</body>
+<script>
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("songsleft").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/songsleft", true);
+    xhttp.send();
+  }, 10000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("state").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/state", true);
+    xhttp.send();
+  }, 10000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("overridestate").innerHTML = this.responseText;
+      }
+    };
+    xhttp.open("GET", "/overridestate", true);
+    xhttp.send();
+  }, 10000 ) ;
+</script>
+</html>
