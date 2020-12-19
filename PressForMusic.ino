@@ -35,7 +35,7 @@
 // static IP for this application.
 
 #define WIFI_SSID "iot.egunn.com"
-#define WIFI_PASSWORD "stuff"
+#define WIFI_PASSWORD "blah"
 
 // ------------------------------------------------------------------------------------------------
 // This section contains settings for the MQTT server you wish the device to connect to.
@@ -53,7 +53,7 @@
 // GMT +1 = 3600
 // Pacific daylight time is UTC -7 hr = -25200
 // Though when daylight savings is in place PST is -8 hr = -28800
-#define GMT_OFFSET -25200
+#define GMT_OFFSET -28800
 #endif
 
 // ------------------------------------------------------------------------------------------------
@@ -87,6 +87,18 @@ const char MQTT_BUTTON_PRESS_COUNT_PLAYING_TOPIC[] = "christmas/pressForMusic/co
 // We will publish push events to this topic when there is NOT music playing.
 // This can be used to get a count of how many people push the button outside of the show.
 const char MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC[] = "christmas/pressForMusic/countIdle";
+
+// We will both publish and subscribe to this topic to allow multiple ESP8266-based "press for music" devices to
+// operate on the same network.  
+// When the button is pressed on a device, we publish the IP address of the triggering device to this topic.
+// All subscribing devices which do not have the same IP address will treat an incoming triggerDevice
+// message as if it was a local button press.
+// This enables some interesting use-cases:
+// 1. A button which is mounted remotely from the speakers.  An ESP8266 can be used as a means to trigger the
+// relay for speakers on another ESP8266 device.
+// 2. Sync multiple "press for music" button/speaker pairings.  When one button is pressed all will turn on at the
+// same time.
+const char MQTT_BUTTON_TRIGGER_DEVICE_TOPIC[] = "christmas/pressForMusic/triggerDevice";
 
 const char MQTT_TRIGGER_PAYLOAD[] = "trigger";
 
@@ -128,7 +140,7 @@ int SONG_COUNT = 2;
 // so the closest proxy is to monitor for times when no media is playing.
 // By default this functionality is turned off
 
-#define TRIGGER_RELAY_DURING_PAUSE
+#undef TRIGGER_RELAY_DURING_PAUSE
 
 // This is the pin on your ESP8266 which has a relay connected to it for the purpose of triggering
 // during media pauses.
@@ -191,13 +203,18 @@ unsigned long lastButtonStateChangeTime = 0;
 unsigned long debounceTime = 50;
 unsigned long deactivePauseRelayTime = 0;
 
+// Used to track our own Ip address.
+String myIpAddress;
+
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 
+// Used for building the web UX; returns number of songs remaining.
 String getSongsLeft() {
   return String(songsRemaining);
 }
 
+// Used for building the web UX; returns the state of the speakers.
 String getState() {
   if (!overrideOn && songsRemaining <= -1) {
     return "off";
@@ -206,6 +223,7 @@ String getState() {
   }
 }
 
+// Used for building the web UX; returns the override state.
 String getOverrideState() {
   if (overrideOn) {
     return "on";
@@ -214,6 +232,8 @@ String getOverrideState() {
   }
 }
 
+// Used for building the web UX; returns the number of songs for which we will
+// keep the speakers on.
 String getSongsOnPref() {
   return String(SONG_COUNT);
 }
@@ -258,6 +278,7 @@ void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     Serial.print("My IP: ");
     Serial.println(WiFi.localIP());
   #endif
+  myIpAddress = WiFi.localIP().toString();
   connectToMqtt();
 
   // There's still time!
@@ -266,6 +287,7 @@ void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     timeClient.setTimeOffset(GMT_OFFSET);
   #endif
 
+  // Configure the various web requests.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     Serial.println("Woot! Got http request");
     request->send(SPIFFS, "/index.html", String(), false, processor);
@@ -305,7 +327,7 @@ void onWifiConnect(const WiFiEventStationModeGotIP& event) {
     request->send(SPIFFS, "/index.html", String(), false, processor);
   });
 
-  // Turn speakers off!
+  // Change the song count preference
   server.on("/songsonpref", HTTP_GET, [](AsyncWebServerRequest *request){
     for(int i=0;i<request->params();i++){
       AsyncWebParameter* p = request->getParam(i);
@@ -356,6 +378,9 @@ void onMqttConnect(bool sessionPresent) {
   #ifdef TRIGGER_RELAY_DURING_PAUSE
   packetIdSub = mqttClient.subscribe(MQTT_FPP_PLAYLIST_SEQUENCE_STATUS_TOPIC, 2);
   #endif
+
+  // Track triggers from all devices.
+  packetIdSub = mqttClient.subscribe(MQTT_BUTTON_TRIGGER_DEVICE_TOPIC, 2);
 }
 
 // Async callback received when connection to MQTT server is lost.
@@ -447,6 +472,9 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
     #endif
     if (newPosition != currentPlaylistPosition && isFppPlaying) {
       songsRemaining--;
+      if (songsRemaining < 0) {
+        songsRemaining = 0;
+      }
       #ifdef DEBUG_SERIAL
         Serial.println("-- New Song --");
         Serial.print("Songs remaining: ");
@@ -484,8 +512,24 @@ void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties 
         Serial.println(deactivePauseRelayTime);
       #endif
     }
+  // Monitor button presses on other devices (and our own).
+  } else if (strcmp(topic, MQTT_BUTTON_TRIGGER_DEVICE_TOPIC) == 0) {
+    char tempIp[len + 1];
+    strncpy(tempIp, payload, len);
+    tempIp[len] = '\0';
+
+    if (strcmp(tempIp, myIpAddress.c_str()) == 0) {
+      #ifdef DEBUG_SERIAL
+        Serial.println(" Button presss; local ignored.");
+      #endif
+    } else {
+      #ifdef DEBUG_SERIAL
+        Serial.print(" Button press from device: ");
+        Serial.println(tempIp);
+      #endif
+      handleButtonDown(false);
+    }
   }
-  
 }
 
 void initializeFilesystem() {
@@ -591,7 +635,7 @@ void handleRickRoll() {
   mqttClient.publish(MQTT_FPP_RICKROLL_TOPIC, 2, true, "start");
 }
 
-void handleButtonDown() {
+void handleButtonDown(bool publishPress) {
   const char* topic;
   const char* payload;
 
@@ -625,7 +669,11 @@ void handleButtonDown() {
     digitalWrite(SPEAKER_RELAY_PIN, HIGH);
     topic = MQTT_BUTTON_PRESS_COUNT_PLAYING_TOPIC;
     #ifdef MQTT_PUBLISH_TO_BLUEIRIS
-      mqttClient.publish(MQTT_BLUEIRIS_TRIGGER_TOPIC, 2, true, MQTT_BLUEIRIS_TRIGGER_PAYLOAD);
+      // Only notify BlueIris if the press originated on this device to avoid over-triggering
+      // the cameras
+      if (publishPress) {
+        mqttClient.publish(MQTT_BLUEIRIS_TRIGGER_TOPIC, 2, true, MQTT_BLUEIRIS_TRIGGER_PAYLOAD);
+      }
     #endif
   } else {
     // TODO: Rickroll someone who pushes the button during the day when the show is off.
@@ -637,7 +685,19 @@ void handleButtonDown() {
     handleRickRoll();
     topic = MQTT_BUTTON_PRESS_COUNT_IDLE_TOPIC;
   }
-  mqttClient.publish(topic, 2, true, payload);
+  // Only publish presses on the original triggering devices to avoid overstating presses.
+  if (publishPress) {
+    mqttClient.publish(topic, 2, true, payload);
+  }
+
+  // Let other devices know that the button was pressed, but only if we're not triggering because another
+  // device sent an MQTT packet.  We don't want this to go on indefinitely.
+  if (publishPress) {
+    #ifdef DEBUG_SERIAL
+      Serial.println("  Publishing local press");
+    #endif
+    mqttClient.publish(MQTT_BUTTON_TRIGGER_DEVICE_TOPIC, 2, true, myIpAddress.c_str());
+  }
 }
 
 // The main event loop.
@@ -656,7 +716,7 @@ void loop() {
       #ifdef DEBUG_SERIAL
         Serial.println("  << BUTTON DOWN");
       #endif
-      handleButtonDown();
+      handleButtonDown(true);
     } else {
       #ifdef DEBUG_SERIAL
         Serial.println("  << BUTTON UP");
